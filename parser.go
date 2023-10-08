@@ -1,5 +1,6 @@
 package protobufparser
 
+//refs: https://protobuf.dev/programming-guides/encoding/
 import (
 	"fmt"
 	"github.com/golang/protobuf/proto"
