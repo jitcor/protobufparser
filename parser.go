@@ -4,6 +4,7 @@ package protobufparser
 import (
 	"fmt"
 	"github.com/golang/protobuf/proto"
+	"io"
 )
 
 type ProtobufParser struct {
@@ -16,17 +17,22 @@ func NewProtobufParser(bin []byte) *ProtobufParser {
 	return &ProtobufParser{originalBin: bin, bin: bin, offset: 0}
 }
 
-func (that *ProtobufParser) Query(fieldNumbers ...uint) (interface{}, error) {
+func (that *ProtobufParser) Query(fieldNumbers ...uint) ([]interface{}, error) {
 	that.bin = that.originalBin
 	that.offset = 0
+	fieldBuffer := make([]interface{}, 0)
 	for i := 0; i < len(fieldNumbers); {
 		fn, value, err := that.readField()
 		if err != nil {
+			if err == io.EOF {
+				return fieldBuffer, nil
+			}
 			return nil, err
 		}
 		if fn == fieldNumbers[i] {
 			if i == len(fieldNumbers)-1 {
-				return value, nil
+				fieldBuffer = append(fieldBuffer, value)
+				continue
 			}
 			that.bin = value.([]byte)
 			that.offset = 0
@@ -36,7 +42,13 @@ func (that *ProtobufParser) Query(fieldNumbers ...uint) (interface{}, error) {
 	return nil, fmt.Errorf("not found field")
 }
 func (that *ProtobufParser) readField() (uint, interface{}, error) {
+	if len(that.bin) == that.offset {
+		return 0, nil, io.EOF
+	}
 	tag, rLen := proto.DecodeVarint(that.bin[that.offset:])
+	if rLen == 0 {
+		return 0, nil, io.EOF
+	}
 	that.offset += rLen
 	fieldNumber := tag >> 3
 	wireType := tag & 0x7
