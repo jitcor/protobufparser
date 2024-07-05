@@ -7,17 +7,19 @@ import (
 	"io"
 )
 
-type ProtobufParser struct {
+type protobufParser struct {
 	originalBin []byte
 	bin         []byte
 	offset      int
 }
 
-func NewProtobufParser(bin []byte) *ProtobufParser {
-	return &ProtobufParser{originalBin: bin, bin: bin, offset: 0}
+func newProtobufParser(bin []byte) *protobufParser {
+	return &protobufParser{originalBin: bin, bin: bin, offset: 0}
 }
-
-func (that *ProtobufParser) Query(fieldNumbers ...uint) ([]interface{}, error) {
+func (that *protobufParser) remaining() []byte {
+	return that.bin[that.offset:]
+}
+func (that *protobufParser) query(fieldNumbers ...uint) ([]interface{}, error) {
 	that.bin = that.originalBin
 	that.offset = 0
 	fieldBuffer := make([]interface{}, 0)
@@ -34,14 +36,18 @@ func (that *ProtobufParser) Query(fieldNumbers ...uint) ([]interface{}, error) {
 				fieldBuffer = append(fieldBuffer, value)
 				continue
 			}
-			that.bin = value.([]byte)
-			that.offset = 0
-			i++
+			if v, ok := value.([]byte); ok {
+				that.bin = v
+				that.offset = 0
+				i++
+			} else {
+				return nil, fmt.Errorf("unexpected value type for field %d: %T", fn, value)
+			}
 		}
 	}
 	return nil, fmt.Errorf("not found field")
 }
-func (that *ProtobufParser) readField() (uint, interface{}, error) {
+func (that *protobufParser) readField() (uint, interface{}, error) {
 	if len(that.bin) == that.offset {
 		return 0, nil, io.EOF
 	}
@@ -67,6 +73,75 @@ func (that *ProtobufParser) readField() (uint, interface{}, error) {
 		return uint(fieldNumber), nil, fmt.Errorf("not supported wireType:%d", wireType)
 	}
 }
-func (that *ProtobufParser) Put(index int, value *BaseValue) error {
-	panic("not implement Put")
+
+type object struct {
+	value       any
+	members     []*object
+	isPrimitive bool
+}
+
+func PQuery(bin []byte, fieldNumbers ...uint) ([]any, error) {
+	rootObject := &object{
+		value:       nil,
+		members:     make([]*object, 0),
+		isPrimitive: false,
+	}
+	if len(fieldNumbers) == 0 {
+		return nil, fmt.Errorf("not found field")
+	}
+	err := queryFields1(bin, rootObject, fieldNumbers...)
+	if err != nil {
+		return nil, err
+	}
+	members := getRootMembers(rootObject)
+	results := make([]any, 0)
+	for _, member := range members {
+		if member.isPrimitive {
+			results = append(results, member.value)
+		}
+	}
+	return results, nil
+}
+func getRootMembers(root *object) []*object {
+	var roots []*object
+	for _, member := range root.members {
+		if member != nil && member.isPrimitive {
+			roots = append(roots, member)
+		} else {
+			roots = append(roots, getRootMembers(member)...)
+		}
+	}
+	return roots
+}
+func queryFields1(bin []byte, obj *object, fieldNumbers ...uint) error {
+	tmpObject := obj
+	result, err := queryFields0(bin, fieldNumbers[0])
+	if err != nil {
+		return err
+	}
+	tmpObject.members = append(tmpObject.members, result...)
+	if len(fieldNumbers) == 1 {
+		for _, member := range tmpObject.members {
+			member.isPrimitive = true
+		}
+		return nil
+	}
+	for _, member := range tmpObject.members {
+		err := queryFields1(member.value.([]byte), member, fieldNumbers[1:]...)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func queryFields0(bin []byte, fieldNumber uint) ([]*object, error) {
+	query, err := newProtobufParser(bin).query(fieldNumber)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]*object, 0)
+	for _, q := range query {
+		result = append(result, &object{value: q})
+	}
+	return result, nil
 }
